@@ -1,0 +1,18 @@
+{
+    "ref_mesh": "data/food2",
+    "random_textures": true,
+    "iter": 3000,
+    "save_interval": 100,
+    "texture_res": [ 4096, 4096 ],
+    "train_res": [540, 960],
+    "batch": 6,
+    "learning_rate": [0.03, 0.01],
+    "ks_min" : [0, 0.25, 0.0],
+    "dmtet_grid" : 32,
+    "mesh_scale" : 2.4,
+    "laplace_scale" : 10000,
+    "display": [{"latlong" : true}, {"bsdf" : "kd"}, {"bsdf" : "ks"}, {"bsdf" : "normal"}],
+    "background" : "white",
+    "validate": false,
+    "out_dir": "food2_test3_moreiters"
+}

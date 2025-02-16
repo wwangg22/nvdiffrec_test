@@ -77,6 +77,7 @@ def prepare_batch(target, bg_type='black'):
     elif bg_type == 'reference':
         background = target['img'][..., 0:3]
     elif bg_type == 'random':
+        # print("image shape??", target['img'].shape[0:3] )
         background = torch.rand(target['img'].shape[0:3] + (3,), dtype=torch.float32, device='cuda')
     else:
         assert False, "Unknown background type %s" % bg_type
@@ -97,6 +98,7 @@ def prepare_batch(target, bg_type='black'):
 
 @torch.no_grad()
 def xatlas_uvmap(glctx, geometry, mat, FLAGS):
+    print('helloo11')
     eval_mesh = geometry.getMesh(mat)
     
     # Create uvs with xatlas
@@ -194,6 +196,7 @@ def validate_itr(glctx, target, geometry, opt_material, lgt, FLAGS):
         result_dict['ref'] = util.rgb_to_srgb(target['img'][...,0:3])[0]
         result_dict['opt'] = util.rgb_to_srgb(buffers['shaded'][...,0:3])[0]
         result_image = torch.cat([result_dict['opt'], result_dict['ref']], axis=1)
+        
 
         if FLAGS.display is not None:
             white_bg = torch.ones_like(target['background'])
@@ -217,6 +220,62 @@ def validate_itr(glctx, target, geometry, opt_material, lgt, FLAGS):
                     else:
                         result_dict[layer['bsdf']] = buffers['shaded'][0, ..., 0:3]
                     result_image = torch.cat([result_image, result_dict[layer['bsdf']]], axis=1)
+
+        #      # -------------------------------------------------------------------
+        # # (A) Get the final mesh from geometry + opt_material
+        # # -------------------------------------------------------------------
+        # mesh_iter = geometry.getMesh(opt_material)
+
+        # # -------------------------------------------------------------------
+        # # (B) Create an output directory for validation textures
+        # # -------------------------------------------------------------------
+        # tex_dir = os.path.join(FLAGS.out_dir, "validate_textures")
+        # os.makedirs(tex_dir, exist_ok=True)
+
+        # # -------------------------------------------------------------------
+        # # (C) Iterate over the material keys.  We handle:
+        # #     - 2D Texture2D objects
+        # #     - MLPTexture3D (baking them to a 2D map before saving)
+        # # -------------------------------------------------------------------
+        # for param_key in mesh_iter.material.keys():
+        #     param_val = mesh_iter.material[param_key]
+
+        #     # 1. If it's a direct 2D texture, just copy to CPU and save:
+        #     if isinstance(param_val, texture.Texture2D):
+        #         tex_data = param_val.cpu().numpy()  # shape: [H, W, C]
+        #         out_path = os.path.join(tex_dir, f"{param_key}.png")
+        #         util.save_image(out_path, tex_data)
+        #         print(f"validate_itr: saved 2D texture '{param_key}' to {out_path}")
+
+        #     # 2. If it's an MLP texture, we must 'bake' it to a 2D UV map:
+        #     elif isinstance(param_val, mlptexture.MLPTexture3D):
+        #         print(f"validate_itr: MLP texture '{param_key}' found. Baking to 2D...")
+
+        #         # Bake the MLP to 2D.  shape: (B,H,W,C), typically B=1
+        #         mask, kd_baked, ks_baked, normal_baked = render.render_uv(
+        #             glctx,
+        #             mesh_iter,
+        #             FLAGS.texture_res,     # e.g., [1024, 1024]
+        #             param_val             # the MLP texture we want to sample
+        #         )
+
+        #         # Typically, MLP 'kd_ks_normal' packs multiple channels into kd_baked
+        #         # or returns separate kd/ks/normal as above.  Adjust as needed.
+        #         # Save them as pngs:
+        #         kd_np = kd_baked[0].cpu().numpy()         # shape [H, W, C]
+        #         ks_np = ks_baked[0].cpu().numpy()
+        #         nrm_np = normal_baked[0].cpu().numpy()
+
+        #         util.save_image(os.path.join(tex_dir, f"{param_key}_kd.png"), kd_np)
+        #         util.save_image(os.path.join(tex_dir, f"{param_key}_ks.png"), ks_np)
+        #         util.save_image(os.path.join(tex_dir, f"{param_key}_normal.png"), nrm_np)
+
+        #         print(f"validate_itr: baked & saved '{param_key}' => 3 textures (kd, ks, normal)")
+
+        #     # 3. If it's something else (like "bsdf" = string), skip:
+        #     else:
+        #         print(f"validate_itr: skipping param '{param_key}' (not a texture).")
+
    
         return result_image, result_dict
 
@@ -318,7 +377,6 @@ def optimize_mesh(
     # ==============================================================================================
     #  Setup torch optimizer
     # ==============================================================================================
-
     learning_rate = FLAGS.learning_rate[pass_idx] if isinstance(FLAGS.learning_rate, list) or isinstance(FLAGS.learning_rate, tuple) else FLAGS.learning_rate
     learning_rate_pos = learning_rate[0] if isinstance(learning_rate, list) or isinstance(learning_rate, tuple) else learning_rate
     learning_rate_mat = learning_rate[1] if isinstance(learning_rate, list) or isinstance(learning_rate, tuple) else learning_rate
@@ -328,9 +386,6 @@ def optimize_mesh(
             return iter / warmup_iter 
         return max(0.0, 10**(-(iter - warmup_iter)*0.0002)) # Exponential falloff from [1.0, 0.1] over 5k epochs.    
 
-    # ==============================================================================================
-    #  Image loss
-    # ==============================================================================================
     image_loss_fn = createLoss(FLAGS)
 
     trainer_noddp = Trainer(glctx, geometry, lgt, opt_material, optimize_geometry, optimize_light, image_loss_fn, FLAGS)
@@ -339,8 +394,7 @@ def optimize_mesh(
     else:
         betas = (0.9, 0.999)
 
-    if FLAGS.multi_gpu: 
-        # Multi GPU training mode
+    if FLAGS.multi_gpu:
         import apex
         from apex.parallel import DistributedDataParallel as DDP
 
@@ -353,7 +407,6 @@ def optimize_mesh(
         optimizer = apex.optimizers.FusedAdam(trainer_noddp.params, lr=learning_rate_mat)
         scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lambda x: lr_schedule(x, 0.9)) 
     else:
-        # Single GPU training mode
         trainer = trainer_noddp
         if optimize_geometry:
             optimizer_mesh = torch.optim.Adam(trainer_noddp.geo_params, lr=learning_rate_pos, betas=betas)
@@ -362,9 +415,6 @@ def optimize_mesh(
         optimizer = torch.optim.Adam(trainer_noddp.params, lr=learning_rate_mat)
         scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lambda x: lr_schedule(x, 0.9)) 
 
-    # ==============================================================================================
-    #  Training loop
-    # ==============================================================================================
     img_cnt = 0
     img_loss_vec = []
     reg_loss_vec = []
@@ -389,21 +439,20 @@ def optimize_mesh(
         target = prepare_batch(target, 'random')
 
         # ==============================================================================================
-        #  Display / save outputs. Do it before training so we get initial meshes
+        #  Display / save outputs (for visualization)
         # ==============================================================================================
-
-        # Show/save image before training step (want to get correct rendering of input)
         if FLAGS.local_rank == 0:
             display_image = FLAGS.display_interval and (it % FLAGS.display_interval == 0)
-            save_image = FLAGS.save_interval and (it % FLAGS.save_interval == 0)
+            save_image    = FLAGS.save_interval and (it % FLAGS.save_interval == 0)
             if display_image or save_image:
-                result_image, result_dict = validate_itr(glctx, prepare_batch(next(v_it), FLAGS.background), geometry, opt_material, lgt, FLAGS)
+                result_image, result_dict = validate_itr(glctx, prepare_batch(next(v_it), FLAGS.background),
+                                                         geometry, opt_material, lgt, FLAGS)
                 np_result_image = result_image.detach().cpu().numpy()
                 if display_image:
                     util.display_image(np_result_image, title='%d / %d' % (it, FLAGS.iter))
                 if save_image:
                     util.save_image(FLAGS.out_dir + '/' + ('img_%s_%06d.png' % (pass_name, img_cnt)), np_result_image)
-                    img_cnt = img_cnt+1
+                    img_cnt += 1
 
         iter_start_time = time.time()
 
@@ -415,22 +464,20 @@ def optimize_mesh(
             optimizer_mesh.zero_grad()
 
         # ==============================================================================================
-        #  Training
+        #  Forward + losses
         # ==============================================================================================
         img_loss, reg_loss = trainer(target, it)
-
-        # ==============================================================================================
-        #  Final loss
-        # ==============================================================================================
         total_loss = img_loss + reg_loss
 
         img_loss_vec.append(img_loss.item())
         reg_loss_vec.append(reg_loss.item())
 
         # ==============================================================================================
-        #  Backpropagate
+        #  Backprop
         # ==============================================================================================
         total_loss.backward()
+
+        # Optional scaling on certain gradients
         if hasattr(lgt, 'base') and lgt.base.grad is not None and optimize_light:
             lgt.base.grad *= 64
         if 'kd_ks_normal' in opt_material:
@@ -444,7 +491,7 @@ def optimize_mesh(
             scheduler_mesh.step()
 
         # ==============================================================================================
-        #  Clamp trainables to reasonable range
+        #  Clamp texture / light / normal map
         # ==============================================================================================
         with torch.no_grad():
             if 'kd' in opt_material:
@@ -467,12 +514,61 @@ def optimize_mesh(
             img_loss_avg = np.mean(np.asarray(img_loss_vec[-log_interval:]))
             reg_loss_avg = np.mean(np.asarray(reg_loss_vec[-log_interval:]))
             iter_dur_avg = np.mean(np.asarray(iter_dur_vec[-log_interval:]))
-            
-            remaining_time = (FLAGS.iter-it)*iter_dur_avg
+
+            remaining_time = (FLAGS.iter - it)*iter_dur_avg
             print("iter=%5d, img_loss=%.6f, reg_loss=%.6f, lr=%.5f, time=%.1f ms, rem=%s" % 
-                (it, img_loss_avg, reg_loss_avg, optimizer.param_groups[0]['lr'], iter_dur_avg*1000, util.time_to_text(remaining_time)))
+                (it, img_loss_avg, reg_loss_avg, optimizer.param_groups[0]['lr'],
+                 iter_dur_avg*1000, util.time_to_text(remaining_time)))
+
+        # ==============================================================================================
+        #  SAVE MESH & TEXTURE EVERY 10 ITERATIONS
+        # ==============================================================================================
+        # if (it + 1) % 10 == 0 and FLAGS.local_rank == 0:
+        #     save_iter_dir = os.path.join(FLAGS.out_dir, f'iter_{it+1:04d}')
+        #     os.makedirs(save_iter_dir, exist_ok=True)
+
+        #     # Get the mesh with the current material
+        #     mesh_iter = geometry.getMesh(opt_material)
+
+        #     # Write the OBJ + MTL to disk
+        #     obj.write_obj(save_iter_dir, mesh_iter)
+
+        #     # Now manually export the textures from mesh_iter.material
+        #     if mesh_iter.material is not None:
+        #         # mesh_iter.material.keys() typically yields something like
+        #         # ["bsdf", "kd", "ks", "normal"] or ["bsdf", "kd_ks_normal"] etc.
+        #         for param_key in mesh_iter.material.keys():
+        #             param_val = mesh_iter.material[param_key]
+
+        #             # If it's a 2D texture (Texture2D), we can save directly as PNG
+        #             if isinstance(param_val, texture.Texture2D):
+        #                 tex_data = param_val.cpu().numpy()  # shape: [H, W, C]
+        #                 out_path = os.path.join(save_iter_dir, f"{param_key}.png")
+        #                 util.save_image(out_path, tex_data)
+        #                 print(f"Saved 2D texture '{param_key}' to: {out_path}")
+
+        #             # If it's an MLP texture, we can't directly save to PNG:
+        #             elif isinstance(param_val, mlptexture.MLPTexture3D):
+        #                 print(f"Skipping MLP texture '{param_key}' (not directly savable).")
+        #                 # To export MLP textures as images, you need to "bake" them,
+        #                 # usually with xatlas or render_uv, e.g.:
+        #                 #
+        #                 #   mask, kd, ks, normal = render.render_uv(glctx, mesh_iter, <texture_res>, param_val)
+        #                 #
+        #                 # This step is more specialized. If needed, do it here.
+
+        #             # If it's just a string or something else (like "bsdf"), skip
+        #             else:
+        #                 print(f"Skipping non-texture param '{param_key}'.")
+
+        #     print(f"Saved mesh + possible textures at iteration {it+1} -> {save_iter_dir}")
+
+
+
+
 
     return geometry, opt_material
+
 
 #----------------------------------------------------------------------------
 # Main function.
@@ -564,15 +660,21 @@ if __name__ == "__main__":
     # ==============================================================================================
     #  Create data pipeline
     # ==============================================================================================
+    # print("FLAGS REF MESH", FLAGS.ref_mesh)
+    # print("path ", os.path.join(FLAGS.ref_mesh, 'transforms_train.json').replace("\\", "/"))
+    # print("does this work", os.path.isfile(os.path.join(FLAGS.ref_mesh, 'transforms_train.json').replace("\\", "/")))
     if os.path.splitext(FLAGS.ref_mesh)[1] == '.obj':
+        print("HEY!!")
         ref_mesh         = mesh.load_mesh(FLAGS.ref_mesh, FLAGS.mtl_override)
         dataset_train    = DatasetMesh(ref_mesh, glctx, RADIUS, FLAGS, validate=False)
         dataset_validate = DatasetMesh(ref_mesh, glctx, RADIUS, FLAGS, validate=True)
     elif os.path.isdir(FLAGS.ref_mesh):
+        print("test1")
         if os.path.isfile(os.path.join(FLAGS.ref_mesh, 'poses_bounds.npy')):
             dataset_train    = DatasetLLFF(FLAGS.ref_mesh, FLAGS, examples=(FLAGS.iter+1)*FLAGS.batch)
             dataset_validate = DatasetLLFF(FLAGS.ref_mesh, FLAGS)
         elif os.path.isfile(os.path.join(FLAGS.ref_mesh, 'transforms_train.json')):
+            print("hello!")
             dataset_train    = DatasetNERF(os.path.join(FLAGS.ref_mesh, 'transforms_train.json'), FLAGS, examples=(FLAGS.iter+1)*FLAGS.batch)
             dataset_validate = DatasetNERF(os.path.join(FLAGS.ref_mesh, 'transforms_test.json'), FLAGS)
 
@@ -600,7 +702,7 @@ if __name__ == "__main__":
 
         # Setup textures, make initial guess from reference if possible
         mat = initial_guess_material(geometry, True, FLAGS)
-    
+        print("ABOUT TO OPTIMIZE MESH!!")
         # Run optimization
         geometry, mat = optimize_mesh(glctx, geometry, mat, lgt, dataset_train, dataset_validate, 
                         FLAGS, pass_idx=0, pass_name="dmtet_pass1", optimize_light=FLAGS.learn_light)
